@@ -1,0 +1,265 @@
+---
+title: "Assignment 1"
+author: "Valeria Rincon"
+date: "5/31/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = F, message = F)
+```
+
+```{r}
+library(tidyverse)
+library(plotly)
+library(sf)
+library(tigris)
+library(leaflet)
+library(censusapi)
+```
+
+```{r}
+# setting the working directory
+ setwd("~/Documents/GitHub/valrin1.github.io")
+```
+
+
+## Stacking the datasets
+```{r}
+#Stacking the datasets (Q1 2017 - Q2 2020)
+# 1 kWh = 3.412 kBtu
+# 1 Therm = 100 kBtu
+
+  
+years <- 2017:2020
+quarters <- 1:4
+types <- c("Electric", "Gas") 
+
+pge_elec_gas <- NULL
+
+for(quarter in quarters){
+  for(year in years){
+    for (type in types){
+      filename <- 
+         paste0(
+        "PGE_",
+        year,
+        "_Q",
+        quarter,
+        "_",
+        type,
+        "UsageByZip.csv"
+      )
+      if(quarter %in% 3:4 && year == 2020){
+        next
+      }
+      print(filename)
+    
+      temp <- read.csv(filename)
+      
+      # temp <- temp[,-8]
+      
+      # Convert last columns to kbtu
+      # Convert from therm or kwh depending on value of type
+      if(type == "Electric") {
+        temp <- select(temp, -AVERAGEKWH)
+        temp$TOTALKBTU <- as.numeric(gsub(",", "", temp$TOTALKWH)) * 3.412
+        temp <- select(temp, -TOTALKWH)
+      } else {
+        temp <- select(temp, -AVERAGETHM)
+        temp$TOTALKBTU <- as.numeric(gsub(",", "", temp$TOTALTHM)) * 100
+        temp <- select(temp, -TOTALTHM)
+      }
+      
+      # temp <- temp[,-7]
+      
+      pge_elec_gas <- rbind(pge_elec_gas,temp)
+    }
+  }
+}
+
+#pge_elec_gas_bay_area <- filter(pge_elec_gas, ZIPCODE %in% c("")
+
+saveRDS(pge_elec_gas, "pge_elec_gas.rds")
+```
+
+
+## Filtering for Bay Area Counties Data
+```{r}
+# create a vector or Bay Area Counties
+bay_county_names <-
+  c(
+    "Alameda",
+    "Contra Costa",
+    "Marin",
+    "Napa",
+    "San Francisco",
+    "San Mateo",
+    "Santa Clara",
+    "Solano",
+    "Sonoma"
+  )
+
+# Dataset of 9 Bay Area counties
+bay_counties <-
+  counties("CA", cb = T, progress_bar = F) %>%
+  filter(NAME %in% bay_county_names)
+
+# Zip Code Tabulation Areas provided by the Census Bureau
+# The R package Tigris lets us load ZCTAs for the U.S. 
+usa_zips <- 
+  zctas(cb = T, progress_bar = F)
+
+# Creates a dataset of Bay Area zip codes
+bay_zips <-
+  usa_zips %>% 
+  st_centroid() %>% 
+  .[bay_counties, ] %>% 
+  st_set_geometry(NULL) %>% 
+  left_join(usa_zips %>% select(GEOID10)) %>% 
+  st_as_sf()
+
+# Filters pg_elec_gas to data for only Bay Area zip codes
+pge_elec_gas_bay_area <-
+  pge_elec_gas %>% 
+  filter(CUSTOMERCLASS %in% 
+           c( 
+             "Elec- Residential", 
+             "Elec- Commercial", 
+             "Gas- Residential", 
+             "Gas- Commercial"
+             ),
+         ZIPCODE %in% bay_zips$ZCTA5CE10) %>% 
+  mutate(
+    ZIPCODE = ZIPCODE %>% as.character()
+  )
+
+```
+
+
+## Plotting the Data
+```{r}
+#Creating a date column 
+pge_elec_gas_bay_area$DATE <- 
+  as.Date(
+    paste0( #using paste0 removes spacing - works well for as.Date
+    pge_elec_gas_bay_area$YEAR,
+    "-",
+    pge_elec_gas_bay_area$MONTH,
+    "-",
+    "01"
+    )
+  )
+
+# Plotting the chart
+pge_chart <-
+  pge_elec_gas_bay_area %>% 
+  ggplot() +
+  geom_bar(
+    aes(
+      x = DATE %>% factor(),
+      y = TOTALKBTU,
+      fill = CUSTOMERCLASS
+    ),
+    stat = "identity",
+    position = "stack"
+  ) +
+  labs(
+    x = "Month",
+    y = "Consumption in kBTU",
+    title = "PG&E Bay Area Monthly Electricity and Gas Usage, 2017-2020",
+    fill = "Usage Type"
+  ) +
+   theme(
+    axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1) #to shift the dates so they're visible
+    )
+
+pge_chart
+
+## Observations:
+# Consumption of electricity and gas in the commercial space in lower than it was for Q2 in previous years.This likely has to do with the fact that during Q2 much of the Bay Area was in lockdown and business in some sectors grinded to a halt or slowed down due to a loss of customers and in-person business. Sectors that were heavily impacted included the restaurant and hospitality sectors. Residential consumption of electricity and gas may also seem to have experienced slight increases compared to Q2 of previous years. This would likely have to do with the shelter-in-place policies that were instituted in many parts of the Bay Area in the early days of the pandemic. 
+
+# One other thing to note is that commercial electricity consumption in September of 2017 was also unusually high compared to consumption in other years. I'm not sure why this would be but, it is clear that this is an outlier in the data.
+```
+
+
+## Creating a Map 
+```{r}
+# Creating a dataset that calculates percent change in electricity consumption from between Q1 & Q2 of 2019 to Q1 & Q2 of 2020
+pge_elec_bay_change <-
+  pge_elec_gas_bay_area %>% 
+  filter(CUSTOMERCLASS == "Elec- Residential",
+         YEAR %in% 2019:2020, 
+         MONTH %in% 4:6
+  ) %>% 
+  group_by(
+    ZIPCODE,
+    CUSTOMERCLASS,
+    YEAR
+  ) %>% 
+  summarize(
+    SPRINGKBTU = mean(TOTALKBTU, na.rm = T)
+  ) %>% 
+  pivot_wider(
+    names_from = YEAR, #makes the values in key the name of the columns
+    values_from = SPRINGKBTU
+  ) %>% 
+  rename(
+    KBTU2019 = "2019", 
+    KBTU2020 = "2020"
+  ) %>% 
+  mutate(
+    percent_change = 
+      ((KBTU2020 - KBTU2019)/KBTU2019) * 100
+  ) %>% 
+  subset(KBTU2019 != 0) %>% 
+  subset(KBTU2020 != 0) %>% 
+  drop_na() %>% 
+  left_join( # adds geometry data from a previous data set bay_zips to the new data set
+    bay_zips %>% select(GEOID10),
+    by = c("ZIPCODE" = "GEOID10")
+  ) %>% 
+  st_as_sf() %>% 
+  st_transform(4326)
+
+```
+
+
+```{r}
+## Mapping the percent change by zip code
+res_pal <- colorNumeric(
+  palette = "Accent",
+  domain = 
+    pge_elec_bay_change$percent_change
+)
+
+leaflet() %>% 
+  addTiles() %>% 
+  addPolygons(
+    data = pge_elec_bay_change,
+    fillColor = ~res_pal(percent_change),
+    color = "white",
+    opacity = 0.5,
+    fillOpacity = 0.7,
+    weight = 1,
+    label = ~paste0(
+      round(percent_change), 
+      " percent change ",
+      ZIPCODE
+    ),
+    highlightOptions = highlightOptions(
+      weight = 2,
+      opacity = 1
+    )
+  ) %>% 
+  addLegend(
+    data = pge_elec_bay_change,
+    pal = res_pal,
+    values = ~percent_change,
+    title = "Percent change, 2019-2020"
+  )
+
+## Observations:
+# The range of percent change runs from [-74.22%, +28.01]. However the percent change tends to concentrate around 0% - 20% positive change. Overall it seems most zip codes experienced a slightly positive change in residential electricity consumption indicating they consumed more electricity than in Q2 of the previous year. A few areas notably those around wine country (e.g. Sonoma and Napa) experienced negative percent change in residential electricity consumption. This is probably due to the fact that those areas were significantly impacted by last year's wildfire season that occurred around the same time as the pandemic began. Several persons were asked to evacuate from those areas and some even had their houses burned down or damaged by the wildfires explaining the reduction in overall residential electricity consumption in those areas. 
+```
+
