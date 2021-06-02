@@ -20,7 +20,7 @@ library(censusapi)
 
 ```{r}
 # setting the working directory
- setwd("~/Documents/GitHub/valrin1.github.io")
+ setwd("~/Documents/GitHub/Assignment-1")
 ```
 
 
