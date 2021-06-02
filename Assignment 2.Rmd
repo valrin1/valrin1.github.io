@@ -27,7 +27,7 @@ acs_vars_2018_5yr <-
 
 ```{r}
 # setting the working directory
- setwd("~/Documents/GitHub/valrin1.github.io")
+ setwd("~/Documents/GitHub/Assignment-1")
 ```
 
 ```{r}
